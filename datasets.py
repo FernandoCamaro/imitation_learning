@@ -67,9 +67,80 @@ class KukaStateActionDataset(Dataset):
 
                 return torch.Tensor(kuka_state), torch.Tensor(action)
 
-# # example
+
+class TCNDataset(Dataset):
+        def __init__(self, folder):
+                gen_files = glob.glob(path.join(folder,'LOG_GENERIC_*.bin'))
+                log_gens = []
+                for gen_file in gen_files:
+                        log_gen = readLogFile(gen_file, verbose=False)
+                        log_gens.append(log_gen)
+                self.log_gens = log_gens
+                self.num_perspectives = 3
+                self.eye_locs = [[0,0,.7],[0,0,.9],[0,0,1.1]] # TODO: I prefer cameras in a circunference centered to where the cube is, for example...
+                self.target_loc = [0.95, -0.1, 0.65] #TODO
+                self.up_vector = [0,0,1]
+                self.proj_matrix = p.computeProjectionMatrixFOV(60,1,0.1,3) # TODO
+                self.width = 512
+                self.height = 512
+
+        def __len__(self):
+                return int(32*1e4)
+        
+        def __getitem__(self, idx):
+                # sample a demonstration
+                demons_idx = random.randint(0,len(self.log_gens)-1)
+                log_gen = self.log_gens[demons_idx]
+                
+                # sample a two different time steps from the demonstration
+                t_ap, t_n = random.sample(list(np.arange(len(log_gen))),2)
+                
+                # render two different perspectives of one time step (anchor and positive images), and another perspective the other time step (negative image)
+                # sample the perspectives
+                pers_a, pers_p = random.sample(list(np.arange(self.num_perspectives)), 2)
+                pers_n = random.sample(list(np.arange(self.num_perspectives)), 1)[0]
+                
+                # render the anchor, the positive and the negative images
+                images = []
+                for t, pers in zip([t_ap, t_ap, t_n], [pers_a, pers_p, pers_n]):
+                        # view matrix
+                        view_matrix = p.computeViewMatrix(self.eye_locs[pers], self.target_loc, self.up_vector)
+
+                        # set the environment to the required state
+                        record = log_gen[t]
+                        for k, elem in record.items():
+                                if type(elem) == dict and "objectId" in elem.keys(): # only the objects have integer keys
+                                        Id = elem["objectId"]
+                                        reset_state(Id, elem)
+                        
+                        # render the image
+                        out = p.getCameraImage(self.width, self.height, view_matrix, self.proj_matrix)
+                        rgba = out[2]
+                        print("shape", rgba.shape)
+                        images.append((rgba[:,:,0:3]-128.).transpose((2, 0, 1)) / 128.0)
+
+
+                return images[0], images[1], images[2]
+    
+        def _ppi(self, image): # post process image
+                image = np.array(image, np.float32)
+                image = (image-128.).transpose((2, 0, 1)) / 128.0
+                return image
+
+# # example for KukaStateActionDataset
 # from environments import kukaEnv
 # controllerID = 4
 # env = kukaEnv()
 # dataset = KukaStateActionDataset("demonstrations/cube-to-bowl", env.kuka, controllerID)
 # dataset.__getitem__(0)
+
+# example for TCNDataset
+from PIL import Image
+from environments import kukaEnv
+env = kukaEnv()
+dataset = TCNDataset("demonstrations/cube-to-bowl")
+anchor, positive, negative = dataset.__getitem__(0)
+
+Image.fromarray((anchor*128+128).astype(np.uint8).transpose(1,2,0)).show()
+Image.fromarray((positive*128+128).astype(np.uint8).transpose(1,2,0)).show()
+Image.fromarray((negative*128+128).astype(np.uint8).transpose(1,2,0)).show()
